@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remplissage Bordereau / Date de versement</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#f4f6fa; --card:#fff; --text:#1c2333; --muted:#667085; --line:#e3e7ee;
+    --accent:#2b6cb0; --ok:#1d8a4e; --bad:#c53030; --warn:#b7791f;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#12151c; --card:#1b2030; --text:#e8ecf5; --muted:#98a2b8; --line:#2c3347; --accent:#63a4ff; --ok:#4cd08a; --bad:#ff7b7b; --warn:#f0b955; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
+  header{padding:24px 20px 8px;max-width:1150px;margin:auto}
+  h1{margin:0 0 4px;font-size:1.5rem}
+  header p{margin:0;color:var(--muted)}
+  main{max-width:1150px;margin:auto;padding:12px 20px 60px;display:grid;gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h2{margin:0 0 12px;font-size:1.05rem;display:flex;align-items:center;gap:10px}
+  .step{background:var(--accent);color:#fff;border-radius:50%;width:26px;height:26px;display:inline-grid;place-items:center;font-size:.85rem}
+  input[type=file]{display:block;width:100%;padding:12px;border:2px dashed var(--line);border-radius:10px;background:transparent;color:var(--text)}
+  select,input[type=number]{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);max-width:100%}
+  input[type=number]{width:70px}
+  .src{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px}
+  .src .top{display:flex;justify-content:space-between;gap:10px;align-items:start;margin-bottom:8px}
+  .src .title{font-weight:600;word-break:break-all}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+  .grid label{display:flex;flex-direction:column;gap:4px;font-size:.82rem;color:var(--muted)}
+  .small{font-size:.82rem;color:var(--muted);margin-top:6px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:11px 20px;font-size:1rem;cursor:pointer;font-weight:600}
+  button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.del{background:transparent;color:var(--bad);border:1px solid var(--bad);padding:4px 10px;font-size:.82rem;white-space:nowrap}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .stat{border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-width:130px}
+  .stat b{display:block;font-size:1.4rem}
+  .tablewrap{overflow:auto;max-height:520px;border:1px solid var(--line);border-radius:10px}
+  table{border-collapse:collapse;width:100%;font-size:.92rem}
+  th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{background:var(--bg);position:sticky;top:0}
+  .found{color:var(--ok);font-weight:600}
+  .nf{color:var(--bad);font-weight:600}
+  .multi{color:var(--warn);font-weight:600}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>📄 Remplissage « Bordereau » et « Date de versement »</h1>
+  <p>Importez le fichier principal, ajoutez autant de fichiers de référence que nécessaire, puis téléchargez le fichier principal rempli. Tout reste dans votre navigateur.</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2><span class="step">1</span> Fichier principal</h2>
+    <input type="file" id="mainFile" accept=".xlsx,.xls,.xlsm,.csv">
+    <div id="mainCfg"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span> Fichiers de référence (nombre illimité)</h2>
+    <input type="file" id="refFiles" accept=".xlsx,.xls,.xlsm,.csv" multiple>
+    <div class="small">Sélectionnez plusieurs fichiers d'un coup (Ctrl/Shift + clic), ou rajoutez-en d'autres à tout moment : les nouveaux fichiers s'ajoutent à la liste. L'ordre de la liste est l'ordre de consultation.</div>
+    <div class="small" id="refCount"></div>
+    <div id="refCfg"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">3</span> Recherche et téléchargement</h2>
+    <div class="row">
+      <button id="runBtn" disabled>Chercher les valeurs manquantes</button>
+      <button id="exportBtn" class="sec hidden">Télécharger le fichier principal rempli</button>
+    </div>
+    <div class="small">Seules les cellules vides sont remplies : les valeurs déjà présentes ne sont jamais modifiées. Les accents, majuscules, « M. » / « Mme » et l'ordre nom/prénom sont ignorés pour comparer les noms.</div>
+  </section>
+
+  <section class="card hidden" id="resultCard">
+    <h2>Résultats</h2>
+    <div class="stats" id="stats"></div>
+    <div class="row" style="margin-bottom:10px">
+      <label><input type="checkbox" id="onlyNF"> Afficher uniquement les non trouvés / partiels</label>
+    </div>
+    <div class="tablewrap"><table id="resTable"></table></div>
+    <div class="small" id="limitNote"></div>
+  </section>
+</main>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  let main = null;
+  let refs = [];
+  let results = null;
+  const SHOW_LIMIT = 2000;
+
+  /* ---------- utilitaires ---------- */
+  const CIV = new Set(['m','mr','mme','mlle','madame','monsieur','mademoiselle']);
+  function normKey(v){
+    if (v === null || v === undefined) return '';
+    let t = String(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+      .replace(/[^a-z0-9\u0600-\u06ff]+/g,' ').trim().split(/\s+/).filter(Boolean);
+    if (t.length > 1) t = t.filter(x => !CIV.has(x));
+    return t.sort().join(' ');
+  }
+  function isEmpty(v){
+    if (v === null || v === undefined) return true;
+    const s = String(v).trim();
+    return s === '' || s === '-' || s === '/' || s.toLowerCase() === 'null';
+  }
+  // ramène une date Excel à minuit local (évite les décalages de quelques secondes)
+  function fixDate(d){
+    const n = new Date(d.getTime() + 12*3600*1000);
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  }
+  function fmtDate(v){
+    if (v instanceof Date && !isNaN(v)){
+      const x = fixDate(v);
+      return String(x.getDate()).padStart(2,'0') + '/' + String(x.getMonth()+1).padStart(2,'0') + '/' + x.getFullYear();
+    }
+    return isEmpty(v) ? '' : String(v);
+  }
+  function dateValue(v){
+    if (v instanceof Date && !isNaN(v)) return fixDate(v).getTime();
+    if (typeof v === 'string'){
+      const m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+      if (m) return new Date(+m[3], +m[2]-1, +m[1]).getTime();
+      const t = Date.parse(v); if (!isNaN(t)) return t;
+    }
+    return -1e15;
+  }
+  function readFile(file){
+    return new Promise((resolve, reject)=>{
+      const r = new FileReader();
+      r.onload = e => {
+        try { resolve(XLSX.read(e.target.result, {type:'array', cellDates:true})); }
+        catch(err){ reject(err); }
+      };
+      r.onerror = () => reject(r.error);
+      r.readAsArrayBuffer(file);
+    });
+  }
+  function flat(s){
+    return String(s === null || s === undefined ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  }
+  function guess(headers, rx){
+    for (let i=0;i<headers.length;i++) if (rx.test(flat(headers[i]))) return i;
+    return -1;
+  }
+  function detectHeader(aoa){
+    for (let i=0; i<Math.min(40, aoa.length); i++){
+      const j = flat((aoa[i] || []).map(c => c === null || c === undefined ? '' : String(c)).join('|'));
+      if (/numcli|bordereau|assure|date de vers/.test(j)) return i + 1;
+    }
+    return 1;
+  }
+  function colLabel(i, h){
+    let n = '', k = i;
+    do { n = String.fromCharCode(65 + k % 26) + n; k = Math.floor(k/26) - 1; } while (k >= 0);
+    return n + (h ? ' — ' + h : '');
+  }
+
+  /* ---------- source (fichier + paramètres) ---------- */
+  function parseSource(src){
+    const ws = src.wb.Sheets[src.sheet];
+    const rg = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    src.ws = ws;
+    src.off = { r: rg.s.r, c: rg.s.c };
+    src.aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null, blankrows:true});
+    if (!src.hr) src.hr = detectHeader(src.aoa);
+    const hr = Math.max(1, src.hr);
+    src.headers = (src.aoa[hr-1] || []).map(h => h === null || h === undefined ? '' : String(h));
+    src.rows = src.aoa.slice(hr);
+    let w = src.headers.length;
+    for (const r of src.rows) if (r && r.length > w) w = r.length;
+    while (src.headers.length < w) src.headers.push('');
+    const h = src.headers;
+    const kk = guess(h, /numcli|num cli|n cli|code cli|client|\bcin\b|identifiant|^id$/);
+    const nm = guess(h, /assure|\bnom\b|name|beneficiaire/);
+    let bord = guess(h, /bordereau/);
+    let date = guess(h, /date.*vers|vers.*date/);
+    if (date < 0) date = guess(h, /date/);
+    src.cols = {
+      key:  nm >= 0 ? nm : kk,
+      key2: -1,
+      bord: bord,
+      date: date
+    };
+  }
+  async function makeSource(file){
+    const wb = await readFile(file);
+    const src = { file, wb, sheet: wb.SheetNames[0], hr: 0, cols: null };
+    parseSource(src);
+    return src;
+  }
+  function colSelect(src, key, withNone){
+    const s = document.createElement('select');
+    if (withNone){ const o = document.createElement('option'); o.value = -1; o.textContent = '(aucune)'; s.appendChild(o); }
+    src.headers.forEach((h,i)=>{
+      const o = document.createElement('option'); o.value = i; o.textContent = colLabel(i,h); s.appendChild(o);
+    });
+    s.value = String(src.cols[key]);
+    if (s.value === '') s.value = withNone ? '-1' : '0';
+    s.onchange = () => { src.cols[key] = +s.value; };
+    return s;
+  }
+  function labelWrap(text, el){
+    const l = document.createElement('label'); l.append(text); l.appendChild(el); return l;
+  }
+  function renderSource(src, container, titlePrefix, isMain, onRemove){
+    const box = document.createElement('div'); box.className = 'src';
+    const top = document.createElement('div'); top.className = 'top';
+    const t = document.createElement('div'); t.className = 'title';
+    t.textContent = titlePrefix + src.file.name;
+    top.appendChild(t);
+    if (onRemove){
+      const b = document.createElement('button'); b.className = 'del'; b.textContent = 'Retirer';
+      b.onclick = onRemove; top.appendChild(b);
+    }
+    box.appendChild(top);
+
+    const g = document.createElement('div'); g.className = 'grid';
+
+    const sheetSel = document.createElement('select');
+    src.wb.SheetNames.forEach(n => { const o = document.createElement('option'); o.value = o.textContent = n; sheetSel.appendChild(o); });
+    sheetSel.value = src.sheet;
+    sheetSel.onchange = () => { src.sheet = sheetSel.value; src.hr = 0; parseSource(src); rebuild(); };
+    g.appendChild(labelWrap('Feuille', sheetSel));
+
+    const hr = document.createElement('input'); hr.type = 'number'; hr.min = 1; hr.value = src.hr;
+    hr.onchange = () => { src.hr = Math.max(1, +hr.value || 1); parseSource(src); rebuild(); };
+    g.appendChild(labelWrap('Ligne des en-têtes', hr));
+
+    g.appendChild(labelWrap('Colonne du nom (ex : ASSURE)', colSelect(src,'key',false)));
+    g.appendChild(labelWrap('Autre colonne de recherche (optionnel)', colSelect(src,'key2',true)));
+    g.appendChild(labelWrap('Bordereau de versement', colSelect(src,'bord',true)));
+    g.appendChild(labelWrap('Date de versement', colSelect(src,'date',true)));
+    box.appendChild(g);
+
+    const info = document.createElement('div'); info.className = 'small';
+    info.textContent = src.rows.length + ' ligne(s) après les en-têtes.';
+    box.appendChild(info);
+    container.appendChild(box);
+  }
+  function rebuild(){
+    $('mainCfg').innerHTML = '';
+    if (main) renderSource(main, $('mainCfg'), 'Principal : ', true, null);
+    $('refCfg').innerHTML = '';
+    refs.forEach((r,i) => renderSource(r, $('refCfg'), 'Référence ' + (i+1) + ' : ', false, () => { refs.splice(i,1); invalidate(); rebuild(); }));
+    $('refCount').textContent = refs.length ? refs.length + ' fichier(s) de référence chargé(s).' : '';
+    $('runBtn').disabled = !(main && refs.length > 0);
+  }
+  function invalidate(){
+    results = null;
+    $('resultCard').classList.add('hidden');
+    $('exportBtn').classList.add('hidden');
+  }
+
+  /* ---------- chargement ---------- */
+  $('mainFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { main = await makeSource(f); invalidate(); rebuild(); }
+    catch(err){ alert('Impossible de lire le fichier principal : ' + err.message); }
+  });
+  $('refFiles').addEventListener('change', async e => {
+    const files = Array.from(e.target.files);
+    e.target.value = '';
+    const failed = [];
+    for (let i=0;i<files.length;i++){
+      $('refCount').textContent = 'Chargement ' + (i+1) + ' / ' + files.length + ' : ' + files[i].name + ' …';
+      await new Promise(r => setTimeout(r, 20));
+      try { refs.push(await makeSource(files[i])); }
+      catch(err){ failed.push(files[i].name); }
+    }
+    if (failed.length) alert('Fichier(s) illisible(s) :\n' + failed.join('\n'));
+    invalidate(); rebuild();
+  });
+
+  /* ---------- recherche ---------- */
+  $('runBtn').addEventListener('click', () => {
+    const c = main.cols;
+    if (c.key < 0 || c.bord < 0 || c.date < 0){
+      alert('Dans le fichier principal, choisissez la colonne du nom, la colonne Bordereau et la colonne Date.'); return;
+    }
+
+    const maps = refs.map(r => {
+      const m = new Map();
+      if (r.cols.bord < 0 && r.cols.date < 0) return m;
+      r.rows.forEach((row, i) => {
+        if (!row) return;
+        const bord = r.cols.bord >= 0 ? row[r.cols.bord] : null;
+        const date = r.cols.date >= 0 ? row[r.cols.date] : null;
+        if (isEmpty(bord) && isEmpty(date)) return;
+        const entry = {
+          bord: isEmpty(bord) ? null : (typeof bord === 'number' ? bord : String(bord).trim()),
+          date: isEmpty(date) ? null : date,
+          file: r.file.name,
+          line: r.off.r + r.hr + i + 1
+        };
+        const seen = new Set();
+        [r.cols.key, r.cols.key2].forEach(ci => {
+          if (ci < 0) return;
+          const k = normKey(row[ci]);
+          if (!k || seen.has(k)) return;
+          seen.add(k);
+          if (!m.has(k)) m.set(k, []);
+          m.get(k).push(entry);
+        });
+      });
+      return m;
+    });
+
+    const out = [];
+    let analysed = 0;
+    main.rows.forEach((row, i) => {
+      if (!row) return;
+      const hasKey = !isEmpty(row[c.key]) || (c.key2 >= 0 && !isEmpty(row[c.key2]));
+      if (!hasKey) return;
+      analysed++;
+      const bEmpty = isEmpty(row[c.bord]);
+      const dEmpty = isEmpty(row[c.date]);
+      if (!bEmpty && !dEmpty) return;
+
+      const keys = [c.key, c.key2].filter(x => x >= 0).map(x => normKey(row[x])).filter(Boolean);
+      let matches = [];
+      for (const k of keys){
+        maps.forEach(m => { if (m.has(k)) matches = matches.concat(m.get(k)); });
+        if (matches.length) break;
+      }
+      matches.sort((a,b) => dateValue(b.date) - dateValue(a.date));
+
+      let fb = null, fd = null;
+      const used = [];
+      if (bEmpty && dEmpty){
+        const both = matches.find(m => m.bord !== null && m.date !== null);
+        if (both){ fb = both.bord; fd = both.date; used.push(both); }
+      }
+      if (bEmpty && fb === null){
+        const m = matches.find(m => m.bord !== null);
+        if (m){ fb = m.bord; used.push(m); }
+      }
+      if (dEmpty && fd === null){
+        const m = matches.find(m => m.date !== null);
+        if (m){ fd = m.date; used.push(m); }
+      }
+      const complete = (!bEmpty || fb !== null) && (!dEmpty || fd !== null);
+      const any = fb !== null || fd !== null;
+      const distinct = new Set(matches.filter(m => m.bord !== null).map(m => String(m.bord).toLowerCase())).size;
+      const files = Array.from(new Set(used.map(u => u.file))).join(' + ');
+      const lines = Array.from(new Set(used.map(u => u.line))).join(', ');
+      out.push({
+        i, line: main.off.r + main.hr + i + 1,
+        key: row[c.key], key2: c.key2 >= 0 ? row[c.key2] : '',
+        fb, fd, files, lines, count: matches.length,
+        multi: distinct > 1,
+        status: complete ? (distinct > 1 ? 'Rempli (plusieurs valeurs)' : 'Rempli') : (any ? 'Partiel' : 'Non trouvé')
+      });
+    });
+    results = { out, analysed };
+    renderResults();
+  });
+
+  function renderResults(){
+    const { out, analysed } = results;
+    const full = out.filter(o => o.status.startsWith('Rempli')).length;
+    const part = out.filter(o => o.status === 'Partiel').length;
+    const nf = out.filter(o => o.status === 'Non trouvé').length;
+    $('stats').innerHTML = '';
+    [['Lignes analysées', analysed],['À compléter', out.length],['Remplies', full],['Partielles', part],['Non trouvées', nf]]
+      .forEach(([l,v]) => {
+        const d = document.createElement('div'); d.className = 'stat';
+        const b = document.createElement('b'); b.textContent = v;
+        d.appendChild(b); d.append(l); $('stats').appendChild(d);
+      });
+    drawTable();
+    $('resultCard').classList.remove('hidden');
+    $('exportBtn').classList.remove('hidden');
+  }
+  function cellText(v){ return v === null || v === undefined ? '' : String(v); }
+  function drawTable(){
+    const t = $('resTable'); t.innerHTML = '';
+    const only = $('onlyNF').checked;
+    const head = document.createElement('tr');
+    ['Ligne','Nom','Autre colonne','Bordereau trouvé','Date trouvée','Fichier(s) source','Statut'].forEach(h => {
+      const th = document.createElement('th'); th.textContent = h; head.appendChild(th);
+    });
+    t.appendChild(head);
+    const list = results.out.filter(o => !only || o.status === 'Non trouvé' || o.status === 'Partiel');
+    list.slice(0, SHOW_LIMIT).forEach(o => {
+      const tr = document.createElement('tr');
+      const cells = [o.line, cellText(o.key), cellText(o.key2), o.fb === null ? '' : cellText(o.fb), o.fd === null ? '' : fmtDate(o.fd), o.files, o.status];
+      cells.forEach((c,i) => {
+        const td = document.createElement('td'); td.textContent = c;
+        if (i === 6) td.className = o.status === 'Non trouvé' ? 'nf' : (o.status === 'Partiel' || o.multi ? 'multi' : 'found');
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    $('limitNote').textContent = list.length > SHOW_LIMIT
+      ? 'Affichage limité aux ' + SHOW_LIMIT + ' premières lignes sur ' + list.length + '. Le fichier téléchargé contient toutes les lignes.'
+      : '';
+  }
+  $('onlyNF').addEventListener('change', () => results && drawTable());
+
+  /* ---------- export : on remplit le fichier principal d'origine ---------- */
+  function makeCell(v){
+    if (v instanceof Date) return { t:'d', v: fixDate(v), z:'dd/mm/yyyy' };
+    if (typeof v === 'number') return { t:'n', v: v };
+    return { t:'s', v: String(v) };
+  }
+  function setCell(ws, r, c, v){
+    ws[XLSX.utils.encode_cell({r, c})] = makeCell(v);
+    const rg = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    if (r > rg.e.r) rg.e.r = r;
+    if (c > rg.e.c) rg.e.c = c;
+    ws['!ref'] = XLSX.utils.encode_range(rg);
+  }
+  $('exportBtn').addEventListener('click', () => {
+    if (!results) return;
+    const c = main.cols;
+    const ws = main.ws;
+    results.out.forEach(o => {
+      const r = main.off.r + main.hr + o.i;
+      if (o.fb !== null) setCell(ws, r, main.off.c + c.bord, o.fb);
+      if (o.fd !== null) setCell(ws, r, main.off.c + c.date, o.fd);
+    });
+
+    // feuille de rapport
+    const rep = [['Ligne Excel','Nom','Autre colonne','Bordereau rempli','Date remplie','Fichier(s) source','Ligne(s) source','Statut']];
+    results.out.forEach(o => rep.push([
+      o.line, cellText(o.key), cellText(o.key2),
+      o.fb === null ? '' : o.fb,
+      o.fd === null ? '' : fmtDate(o.fd),
+      o.files, o.lines, o.status
+    ]));
+    let repName = 'Rapport';
+    while (main.wb.SheetNames.includes(repName)) repName += '_';
+    const wsRep = XLSX.utils.aoa_to_sheet(rep);
+    wsRep['!cols'] = [{wch:11},{wch:16},{wch:30},{wch:18},{wch:14},{wch:34},{wch:14},{wch:26}];
+    XLSX.utils.book_append_sheet(main.wb, wsRep, repName);
+
+    const base = main.file.name.replace(/\.[^.]+$/, '');
+    XLSX.writeFile(main.wb, base + '_rempli.xlsx', { cellDates: true });
+
+    // on retire la feuille de rapport du classeur en mémoire pour pouvoir ré-exporter
+    main.wb.SheetNames = main.wb.SheetNames.filter(n => n !== repName);
+    delete main.wb.Sheets[repName];
+  });
+})();
+</script>
+</body>
+</html>
